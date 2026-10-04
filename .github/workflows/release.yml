@@ -2310,8 +2310,14 @@ jobs:
     if: ${{ needs.verify.outputs.publish_tag != '' }}
     needs: [verify, stable-immutable-release]
     runs-on: ubuntu-latest
+    # Sigstore has no outage budget here: a stalled signing call would hold the
+    # release, so bound it and fail the job rather than wait out the default.
+    timeout-minutes: 10
     permissions:
-      # Downloads the draft's archives and uploads the packslip to it.
+      # Downloads the draft's archives and uploads the packslip to it. A job
+      # with only contents: read cannot see a draft release, and the archives
+      # are only on the draft, so this job cannot be split into a read-only
+      # signer and a separate uploader.
       contents: write
       # The keyless signing identity, and the provenance attestation's.
       id-token: write
@@ -2332,11 +2338,29 @@ jobs:
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
+      # The action checks the packslip binary only against jdx/packslip as a
+      # whole, and release assets can be replaced, so pin the bytes here.
+      # Bump PACKSLIP_VERSION and PACKSLIP_SHA256 with the action pin.
+      - name: Install packslip
+        if: steps.existing.outputs.present != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKSLIP_VERSION: 1.5.1
+          PACKSLIP_SHA256: d401822be0f4c0494dde170657499fc197709b530e18b547906dafe05c155d45
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/packslip-pinned"
+          asset="packslip-v${PACKSLIP_VERSION}-linux-x64.tar.xz"
+          gh release download "v${PACKSLIP_VERSION}" --repo jdx/packslip \
+            --pattern "$asset" --dir "$dir"
+          echo "${PACKSLIP_SHA256}  ${dir}/${asset}" | sha256sum --check -
+          tar -xJf "${dir}/${asset}" -C "$dir" --strip-components=1
       - name: Create, sign, and verify the packslip
         id: packslip
         if: steps.existing.outputs.present != 'true'
-        uses: jdx/packslip@4920350c39c234c7a969f9775040bd02829f1923 # v1.3.0
+        uses: jdx/packslip@22be7aeb840156291e1ae795ca37b36a2dc1969c # v1.5.1
         with:
+          packslip-path: ${{ runner.temp }}/packslip-pinned/packslip
           tag: ${{ needs.verify.outputs.publish_tag }}
           download: nub-*.tar.gz nub-*.zip
           bin: nub nubx nubr
